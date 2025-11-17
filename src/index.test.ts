@@ -1,7 +1,15 @@
 import {when} from 'jest-when';
 
+import os from 'os';
+import path from 'path';
+
 import * as core from '@actions/core';
 jest.mock('@actions/core');
+import '@actions/tool-cache';
+jest.mock('@actions/tool-cache', () => ({
+  downloadTool: jest.fn(() => Promise.resolve('/tmp/upterm.tar.gz')),
+  extractTar: jest.fn(() => Promise.resolve('/tmp/upterm-bin'))
+}));
 
 jest.mock('fs', () => ({
   mkdirSync: jest.fn(() => true),
@@ -21,6 +29,7 @@ const mockedExecShellCommand = jest.mocked(execShellCommand);
 import {run} from '.';
 import fs from 'fs';
 const mockFs = fs as jest.Mocked<typeof fs>;
+const TIMEOUT_FLAG_PATH = path.join(os.tmpdir(), 'upterm-timeout-flag');
 
 describe('upterm GitHub integration', () => {
   const originalPlatform = process.platform;
@@ -40,14 +49,6 @@ describe('upterm GitHub integration', () => {
     Object.defineProperty(process, 'arch', {
       value: originalArch
     });
-  });
-
-  it('should skip for windows', async () => {
-    Object.defineProperty(process, 'platform', {
-      value: 'win32'
-    });
-    await run();
-    expect(core.info).toHaveBeenCalledWith('Windows is not supported by upterm, skipping...');
   });
 
   it('should handle the main loop for linux x64', async () => {
@@ -239,7 +240,7 @@ describe('upterm GitHub integration', () => {
     let monitoringLoopCalls = 0;
     mockFs.existsSync.mockImplementation((path: fs.PathLike) => {
       const pathStr = path.toString();
-      if (pathStr === '/tmp/upterm-timeout-flag') {
+      if (pathStr === TIMEOUT_FLAG_PATH) {
         monitoringLoopCalls++;
         // Return true on second call (first call is in monitoring loop)
         return monitoringLoopCalls >= 2;

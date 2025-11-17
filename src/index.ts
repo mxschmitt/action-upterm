@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
+import * as tc from '@actions/tool-cache';
 import {execShellCommand} from './helpers';
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -13,7 +14,11 @@ const UPTERM_READY_MAX_RETRIES = 10;
 const SESSION_STATUS_POLL_INTERVAL = 5000;
 const SUPPORTED_UPTERM_ARCHITECTURES = ['amd64', 'arm64'] as const;
 const TMUX_DIMENSIONS = {width: 132, height: 43};
-const UPTERM_TIMEOUT_FLAG_PATH = '/tmp/upterm-timeout-flag';
+const TMP_DIR = os.tmpdir();
+const UPTERM_COMMAND_LOG_PATH = path.join(TMP_DIR, 'upterm-command.log');
+const TMUX_ERROR_LOG_PATH = path.join(TMP_DIR, 'tmux-error.log');
+const UPTERM_TIMEOUT_FLAG_PATH = path.join(TMP_DIR, 'upterm-timeout-flag');
+const PREFERRED_UPTERM_VERSION = 'v0.18.0';
 
 type UptermArchitecture = (typeof SUPPORTED_UPTERM_ARCHITECTURES)[number];
 
@@ -45,11 +50,6 @@ function validateInputs(): void {
 
 export async function run() {
   try {
-    if (process.platform === 'win32') {
-      core.info('Windows is not supported by upterm, skipping...');
-      return;
-    }
-
     validateInputs();
 
     await installDependencies();
@@ -78,12 +78,31 @@ async function installDependencies(): Promise<void> {
     } catch (error) {
       throw new Error(`Failed to install dependencies on Linux: ${error}`);
     }
-  } else {
+  } else if (process.platform === 'darwin') {
     try {
       await execShellCommand('brew install owenthereal/upterm/upterm tmux');
     } catch (error) {
       throw new Error(`Failed to install dependencies on macOS: ${error}`);
     }
+  } else if (process.platform === 'win32') {
+    const uptermArch = getUptermArchitecture(process.arch);
+    if (!uptermArch) {
+      throw new Error(`Unsupported architecture for upterm: ${process.arch}. Only x64 and arm64 are supported.`);
+    }
+    try {
+      const downloadUrl = `https://github.com/owenthereal/upterm/releases/download/${PREFERRED_UPTERM_VERSION}/upterm_windows_${uptermArch}.tar.gz`;
+      const archivePath = await tc.downloadTool(downloadUrl);
+      const extractDir = await tc.extractTar(archivePath);
+      const uptermExecutable = path.join(extractDir, 'upterm.exe');
+      if (!fs.existsSync(uptermExecutable)) {
+        throw new Error(`upterm.exe not found at expected path: ${uptermExecutable}`);
+      }
+      core.addPath(extractDir);
+    } catch (error) {
+      throw new Error(`Failed to install dependencies on Windows: ${error}`);
+    }
+  } else {
+    throw new Error(`Unsupported platform: ${process.platform}`);
   }
   core.debug('Installed dependencies successfully');
 }
@@ -153,28 +172,39 @@ async function startUptermSession(): Promise<void> {
   }
   const uniqueAllowedUsers = [...new Set(allowedUsers)];
 
+  const quoteChar = process.platform === 'win32' ? '"' : "'";
   let authorizedKeysParameter = '';
   for (const allowedUser of uniqueAllowedUsers) {
-    authorizedKeysParameter += `--github-user '${allowedUser}' `;
+    authorizedKeysParameter += `--github-user ${quoteChar}${allowedUser}${quoteChar} `;
   }
 
   // Upterm session
   const uptermServer = core.getInput('upterm-server');
   const waitTimeoutMinutes = core.getInput('wait-timeout-minutes');
   core.info(`Creating a new session. Connecting to upterm server ${uptermServer}`);
+
+  const uptermCommand = `upterm host --accept --server ${quoteChar}${uptermServer}${quoteChar} ${authorizedKeysParameter}`.trim();
+
   try {
-    await execShellCommand(
-      `tmux new -d -s upterm-wrapper -x ${TMUX_DIMENSIONS.width} -y ${TMUX_DIMENSIONS.height} "upterm host --accept --server '${uptermServer}' ${authorizedKeysParameter} --force-command 'tmux attach -t upterm' -- tmux new -s upterm -x ${TMUX_DIMENSIONS.width} -y ${TMUX_DIMENSIONS.height} 2>&1 | tee /tmp/upterm-command.log" 2>/tmp/tmux-error.log`
-    );
-    // Resize terminal for largest client by default
-    await execShellCommand('tmux set -t upterm-wrapper window-size largest; tmux set -t upterm window-size largest');
+    if (process.platform === 'win32') {
+      // Run in the background so the action can continue while the host stays open
+      await execShellCommand(`Start-Process -FilePath 'upterm' -ArgumentList '${uptermCommand}' -RedirectStandardOutput '${UPTERM_COMMAND_LOG_PATH}' -RedirectStandardError '${UPTERM_COMMAND_LOG_PATH}' -NoNewWindow`);
+    } else {
+      await execShellCommand(
+        `tmux new -d -s upterm-wrapper -x ${TMUX_DIMENSIONS.width} -y ${TMUX_DIMENSIONS.height} "${uptermCommand} --force-command 'tmux attach -t upterm' -- tmux new -s upterm -x ${TMUX_DIMENSIONS.width} -y ${TMUX_DIMENSIONS.height} 2>&1 | tee ${UPTERM_COMMAND_LOG_PATH}" 2>${TMUX_ERROR_LOG_PATH}`
+      );
+      // Resize terminal for largest client by default
+      await execShellCommand('tmux set -t upterm-wrapper window-size largest; tmux set -t upterm window-size largest');
+    }
   } catch (error) {
     // Try to read the tmux error log if it exists
-    try {
-      const tmuxError = await execShellCommand('cat /tmp/tmux-error.log 2>/dev/null || echo "No tmux error log found"');
-      core.error(`Tmux error log: ${tmuxError.trim()}`);
-    } catch (logError) {
-      core.debug(`Could not read tmux error log: ${logError}`);
+    if (process.platform !== 'win32') {
+      try {
+        const tmuxError = await execShellCommand(`cat ${TMUX_ERROR_LOG_PATH} 2>/dev/null || echo "No tmux error log found"`);
+        core.error(`Tmux error log: ${tmuxError.trim()}`);
+      } catch (logError) {
+        core.debug(`Could not read tmux error log: ${logError}`);
+      }
     }
     throw new Error(`Failed to create upterm session: ${error}`);
   }
@@ -189,16 +219,21 @@ async function startUptermSession(): Promise<void> {
     // Input is already validated in validateInputs(), timeout is guaranteed to be safe for shell execution
     try {
       // Create a timeout script that sets our flag and kills the server
-      const timeoutScript = `
-        ( 
-          sleep $(( ${timeout} * 60 )); 
-          if ! pgrep -f '^tmux attach ' &>/dev/null; then 
-            echo "UPTERM_TIMEOUT_REACHED" > ${UPTERM_TIMEOUT_FLAG_PATH};
-            tmux kill-server; 
-          fi 
-        ) & disown
-      `;
-      await execShellCommand(timeoutScript);
+      if (process.platform === 'win32') {
+        const timeoutScript = `Start-Job -ScriptBlock { Start-Sleep -Seconds (${timeout} * 60); $upterm = Get-Process -Name upterm -ErrorAction SilentlyContinue; if ($upterm) { "UPTERM_TIMEOUT_REACHED" | Out-File -FilePath "${UPTERM_TIMEOUT_FLAG_PATH}" -Encoding utf8; $upterm | Stop-Process -Force } } | Out-Null`;
+        await execShellCommand(timeoutScript);
+      } else {
+        const timeoutScript = `
+          ( 
+            sleep $(( ${timeout} * 60 )); 
+            if ! pgrep -f '^tmux attach ' &>/dev/null; then 
+              echo "UPTERM_TIMEOUT_REACHED" > ${UPTERM_TIMEOUT_FLAG_PATH};
+              tmux kill-server; 
+            fi 
+          ) & disown
+        `;
+        await execShellCommand(timeoutScript);
+      }
       core.info(`wait-timeout-minutes set - will wait for ${waitTimeoutMinutes} minutes for someone to connect, otherwise shut down`);
     } catch (error) {
       throw new Error(`Failed to setup timeout: ${error}`);
@@ -235,7 +270,7 @@ async function startUptermSession(): Promise<void> {
 
       // Read upterm command output for additional context
       try {
-        const cmdLog = await execShellCommand('cat /tmp/upterm-command.log 2>/dev/null || echo "No command log"');
+        const cmdLog = await execShellCommand(`cat ${UPTERM_COMMAND_LOG_PATH} 2>/dev/null || echo "No command log"`);
         if (cmdLog.trim() !== 'No command log') {
           diagnostics += `- Command output: ${cmdLog.trim()}\n`;
         }

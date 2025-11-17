@@ -1,6 +1,6 @@
 # Debug [GitHub Actions](https://github.com/features/actions) With SSH
 
-This GitHub Action enables direct interaction with the host system running your GitHub Actions via SSH, utilizing [upterm](https://upterm.dev/) and [tmux](https://github.com/tmux/tmux/wiki). This setup facilitates real-time GitHub Actions debugging and allows seamless workflow continuation.
+This GitHub Action enables direct interaction with the host system running your GitHub Actions via SSH, utilizing [upterm](https://upterm.dev/) and [tmux](https://github.com/tmux/tmux/wiki) (on POSIX). This setup facilitates real-time GitHub Actions debugging and allows seamless workflow continuation.
 
 ## Features
 
@@ -11,7 +11,7 @@ This GitHub Action enables direct interaction with the host system running your 
 
 - **Linux**
 - **macOS**
-- **Windows**: Unsupported (actions will skip to avoid pipeline failures).
+- **Windows**
 
 ## Getting Started
 

@@ -16,23 +16,23 @@ export function execShellCommand(cmd: string): Promise<string> {
   }
 
   return new Promise<string>((resolve, reject) => {
-    const process = spawn(cmd, [], {shell: '/bin/bash'});
+    const child = spawn(cmd, [], {shell: process.platform === 'win32' ? 'powershell.exe' : '/bin/bash'});
     let stdout = '';
     let stderr = '';
 
-    process.stdout.on('data', data => {
+    child.stdout.on('data', data => {
       const output = data.toString();
       console.log(output);
       stdout += output;
     });
 
-    process.stderr.on('data', data => {
+    child.stderr.on('data', data => {
       const output = data.toString();
       console.error(output);
       stderr += output;
     });
 
-    process.on('exit', code => {
+    child.on('exit', code => {
       if (code !== 0) {
         const errorMsg = `Command failed with exit code ${code}: ${cmd}`;
         const fullError = stderr ? `${errorMsg}\nStderr: ${stderr}` : errorMsg;
@@ -42,7 +42,7 @@ export function execShellCommand(cmd: string): Promise<string> {
       resolve(stdout);
     });
 
-    process.on('error', error => {
+    child.on('error', error => {
       reject(new Error(`Process error: ${error.message}`));
     });
   });
