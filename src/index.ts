@@ -18,6 +18,7 @@ const TMP_DIR = os.tmpdir();
 const UPTERM_COMMAND_LOG_PATH = path.join(TMP_DIR, 'upterm-command.log');
 const TMUX_ERROR_LOG_PATH = path.join(TMP_DIR, 'tmux-error.log');
 const UPTERM_TIMEOUT_FLAG_PATH = path.join(TMP_DIR, 'upterm-timeout-flag');
+const UPTERM_ADMIN_SOCKET_PATH = path.join(os.homedir(), '.upterm', 'admin.sock');
 const PREFERRED_UPTERM_VERSION = 'v0.18.0';
 
 type UptermArchitecture = (typeof SUPPORTED_UPTERM_ARCHITECTURES)[number];
@@ -183,7 +184,18 @@ async function startUptermSession(): Promise<void> {
   const waitTimeoutMinutes = core.getInput('wait-timeout-minutes');
   core.info(`Creating a new session. Connecting to upterm server ${uptermServer}`);
 
-  const uptermCommand = `upterm host --accept --server ${quoteChar}${uptermServer}${quoteChar} ${authorizedKeysParameter}`.trim();
+  // Ensure the admin socket directory exists and force a predictable socket path so we can reliably detect readiness
+  fs.mkdirSync(path.dirname(UPTERM_ADMIN_SOCKET_PATH), {recursive: true});
+  if (fs.existsSync(UPTERM_ADMIN_SOCKET_PATH)) {
+    try {
+      fs.unlinkSync(UPTERM_ADMIN_SOCKET_PATH);
+    } catch {
+      // If we cannot delete it we will still try to reuse the path, but log for diagnosability
+      core.debug(`Could not remove existing admin socket at ${UPTERM_ADMIN_SOCKET_PATH}`);
+    }
+  }
+
+  const uptermCommand = `upterm host --admin-socket ${quoteChar}${UPTERM_ADMIN_SOCKET_PATH}${quoteChar} --accept --server ${quoteChar}${uptermServer}${quoteChar} ${authorizedKeysParameter}`.trim();
 
   try {
     if (process.platform === 'win32') {
@@ -242,6 +254,7 @@ async function startUptermSession(): Promise<void> {
 
   // Wait for upterm socket to be ready
   let tries = UPTERM_READY_MAX_RETRIES;
+  let readyFromLog = false;
   while (tries-- > 0) {
     core.info(`Waiting for upterm to be ready... (${UPTERM_READY_MAX_RETRIES - tries}/${UPTERM_READY_MAX_RETRIES})`);
     if (uptermSocketExists()) break;
@@ -250,13 +263,18 @@ async function startUptermSession(): Promise<void> {
       const tail = await execShellCommand(`tail -n 40 ${UPTERM_COMMAND_LOG_PATH} 2>/dev/null || true`);
       if (tail.trim()) {
         core.info(`Recent upterm output:\n${tail.trim()}`);
+        if (!readyFromLog && /SSH Command:\s+ssh\s+[^\s]+@/i.test(tail)) {
+          readyFromLog = true;
+          core.info('Detected SSH command in upterm output - considering upterm ready');
+          break;
+        }
       }
     } catch {
       // Ignore tail errors; the file may not exist yet.
     }
     await sleep(UPTERM_SOCKET_POLL_INTERVAL);
   }
-  if (!uptermSocketExists()) {
+  if (!uptermSocketExists() && !readyFromLog) {
     // Collect diagnostic information for user bug reports
     const uptermDir = path.join(os.homedir(), '.upterm');
     let diagnostics = 'Failed to start upterm - socket not found after maximum retries.\n\nDiagnostics:\n';
@@ -336,7 +354,8 @@ async function monitorSession(): Promise<void> {
     }
 
     try {
-      core.info(await execShellCommand('upterm session current --admin-socket ~/.upterm/*.sock'));
+      const socketArg = process.platform === 'win32' ? `"${UPTERM_ADMIN_SOCKET_PATH}"` : `'${UPTERM_ADMIN_SOCKET_PATH}'`;
+      core.info(await execShellCommand(`upterm session current --admin-socket ${socketArg}`));
     } catch (error) {
       // Check if this error is due to timeout before throwing
       if (isTimeoutReached()) {
@@ -358,6 +377,9 @@ async function monitorSession(): Promise<void> {
 }
 
 function uptermSocketExists(): boolean {
+  if (fs.existsSync(UPTERM_ADMIN_SOCKET_PATH)) {
+    return true;
+  }
   const uptermDir = path.join(os.homedir(), '.upterm');
   if (!fs.existsSync(uptermDir)) return false;
   return fs.readdirSync(uptermDir).some(file => file.endsWith('.sock'));
