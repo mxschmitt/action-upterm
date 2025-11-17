@@ -291,7 +291,7 @@ describe('upterm GitHub integration', () => {
     let timeoutCheckCount = 0;
     mockFs.existsSync.mockImplementation((path: fs.PathLike) => {
       const pathStr = path.toString();
-      if (pathStr === '/tmp/upterm-timeout-flag') {
+      if (pathStr === TIMEOUT_FLAG_PATH) {
         timeoutCheckCount++;
         // Return true after first check (after connection error) to simulate timeout
         return timeoutCheckCount > 1;
@@ -331,7 +331,7 @@ describe('upterm GitHub integration', () => {
     // Mock fs.existsSync to handle different paths correctly
     mockFs.existsSync.mockImplementation((path: fs.PathLike) => {
       const pathStr = path.toString();
-      if (pathStr === '/tmp/upterm-timeout-flag') {
+      if (pathStr === TIMEOUT_FLAG_PATH) {
         return false; // Never return true for timeout flag (no timeout)
       }
       if (pathStr === '/continue' || pathStr.includes('continue')) {
@@ -364,7 +364,7 @@ describe('upterm GitHub integration', () => {
 
     // Check that timeout script was created with correct timeout value
     expect(mockedExecShellCommand).toHaveBeenCalledWith(expect.stringContaining('sleep $(( 10 * 60 ))'));
-    expect(mockedExecShellCommand).toHaveBeenCalledWith(expect.stringContaining('echo "UPTERM_TIMEOUT_REACHED" > /tmp/upterm-timeout-flag'));
+    expect(mockedExecShellCommand).toHaveBeenCalledWith(expect.stringContaining(`echo "UPTERM_TIMEOUT_REACHED" > ${TIMEOUT_FLAG_PATH}`));
     expect(core.info).toHaveBeenCalledWith('wait-timeout-minutes set - will wait for 10 minutes for someone to connect, otherwise shut down');
   });
 });
