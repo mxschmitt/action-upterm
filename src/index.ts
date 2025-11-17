@@ -10,7 +10,7 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 // Constants
 const UPTERM_SOCKET_POLL_INTERVAL = 1000;
-const UPTERM_READY_MAX_RETRIES = 10;
+const UPTERM_READY_MAX_RETRIES = 30;
 const SESSION_STATUS_POLL_INTERVAL = 5000;
 const SUPPORTED_UPTERM_ARCHITECTURES = ['amd64', 'arm64'] as const;
 const TMUX_DIMENSIONS = {width: 132, height: 43};
@@ -245,6 +245,15 @@ async function startUptermSession(): Promise<void> {
   while (tries-- > 0) {
     core.info(`Waiting for upterm to be ready... (${UPTERM_READY_MAX_RETRIES - tries}/${UPTERM_READY_MAX_RETRIES})`);
     if (uptermSocketExists()) break;
+    // Emit a short snippet of the upterm command output to help debugging slow starts
+    try {
+      const tail = await execShellCommand(`tail -n 20 ${UPTERM_COMMAND_LOG_PATH} 2>/dev/null || true`);
+      if (tail.trim()) {
+        core.debug(`Recent upterm output:\n${tail.trim()}`);
+      }
+    } catch {
+      // Ignore tail errors; the file may not exist yet.
+    }
     await sleep(UPTERM_SOCKET_POLL_INTERVAL);
   }
   if (!uptermSocketExists()) {
