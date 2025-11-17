@@ -247,9 +247,9 @@ async function startUptermSession(): Promise<void> {
     if (uptermSocketExists()) break;
     // Emit a short snippet of the upterm command output to help debugging slow starts
     try {
-      const tail = await execShellCommand(`tail -n 20 ${UPTERM_COMMAND_LOG_PATH} 2>/dev/null || true`);
+      const tail = await execShellCommand(`tail -n 40 ${UPTERM_COMMAND_LOG_PATH} 2>/dev/null || true`);
       if (tail.trim()) {
-        core.debug(`Recent upterm output:\n${tail.trim()}`);
+        core.info(`Recent upterm output:\n${tail.trim()}`);
       }
     } catch {
       // Ignore tail errors; the file may not exist yet.
@@ -260,6 +260,16 @@ async function startUptermSession(): Promise<void> {
     // Collect diagnostic information for user bug reports
     const uptermDir = path.join(os.homedir(), '.upterm');
     let diagnostics = 'Failed to start upterm - socket not found after maximum retries.\n\nDiagnostics:\n';
+
+    // Print latest upterm command output
+    try {
+      const cmdLog = await execShellCommand(`tail -n 120 ${UPTERM_COMMAND_LOG_PATH} 2>/dev/null || echo "No command log"`);
+      if (cmdLog.trim()) {
+        diagnostics += `- Recent upterm output:\n${cmdLog.trim()}\n`;
+      }
+    } catch (error) {
+      diagnostics += `- Could not read upterm command log: ${error}\n`;
+    }
 
     // Check what files exist in .upterm directory
     if (fs.existsSync(uptermDir)) {
